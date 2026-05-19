@@ -2,11 +2,13 @@ import numpy as np
 import time
 from collections import defaultdict
 from connect4.policy import Policy
+from connect4.connect_state import ConnectState # Usamos tu clase de estado para el Reward Shaping
+from typing import override
 
 class Connect4ADPAgent(Policy):
     """
     Agente de Connect 4 basado estrictamente en Adaptive Dynamic Programming (ADP).
-    Utiliza el tiempo límite por turno para refinar la evaluación de la política (PE).
+    Incluye Reward Shaping para garantizar convergencia rápida contra agentes aleatorios.
     """
     def __init__(self, max_time=4.0, gamma=0.9):
         super().__init__()
@@ -14,75 +16,83 @@ class Connect4ADPAgent(Policy):
         self.gamma = gamma
         
         # Estructuras de Datos de ADP (Diapositiva 17)
-        self.S = set()                                                      # Conjunto S
-        self.N = defaultdict(lambda: defaultdict(lambda: defaultdict(int))) # Conteo N[s][a][s']
-        self.rewards_model = defaultdict(float)                             # Recompensas r
-        self.P_hat = defaultdict(lambda: defaultdict(lambda: defaultdict(float))) # P_hat(s'|s,a)
+        self.S = set()
+        self.N = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
+        self.rewards_model = defaultdict(float)
+        self.P_hat = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
         
-        self.v_hat = defaultdict(float)                                     # v_hat
-        self.q_hat = defaultdict(lambda: defaultdict(float))                # q_hat
-        self.pi = defaultdict(lambda: defaultdict(float))                   # Política interna pi
+        self.v_hat = defaultdict(float)
+        self.q_hat = defaultdict(lambda: defaultdict(float))
+        self.pi = defaultdict(lambda: defaultdict(float))
         
-        # Variables de rastreo de la trayectoria (Trial) en tiempo real
+        # Variables de rastreo de la trayectoria
         self.last_state = None
         self.last_action = None
+        self.my_player_id = None # Identificador para dar la recompensa al jugador correcto
 
-    def mount(self) -> None:
+    @override
+    def mount(self, timeout: float = 4.0) -> None:
         """
-        Línea 1 del algoritmo ADP: Inicialización de recursos memorizados.
+        Línea 1 del algoritmo ADP.
+        Aceptamos el parámetro `timeout` que el autograder inyecta para evitar el TypeError.
         """
+        if timeout is not None:
+            self.max_time = timeout
+            
         self.last_state = None
         self.last_action = None
-        # Nota: Retenemos S, N y P_hat a lo largo de las partidas porque el MDP del 
-        # Connect 4 no cambia; así el conocimiento se transfiere (Diapositiva 18).
+        self.my_player_id = None 
 
+    @override
     def act(self, s: np.ndarray) -> int:
         start_time = time.time()
         
-        # 1. Identificar estado actual de forma hashable
+        # 1. Identificar nuestra pieza (solo ocurre en el primer turno de la partida)
+        if self.my_player_id is None:
+            red_pieces = np.sum(s == -1)
+            yellow_pieces = np.sum(s == 1)
+            self.my_player_id = -1 if red_pieces == yellow_pieces else 1
+            
         current_state_key = s.tobytes()
         self.S.add(current_state_key)
         
-        # Calcular columnas disponibles en el tablero actual
         available_cols = [c for c in range(7) if s[0, c] == 0]
         if not available_cols:
             return 0
             
-        # 2. Registrar Transición del Mundo Real (Líneas 10 y 11 del algoritmo ADP)
+        # 2. Registrar Transición del Mundo Real y Reward Shaping
         if self.last_state is not None and self.last_action is not None:
-            # Capturamos la recompensa inmediata si el estado es terminal (heurística básica de fin de juego)
+            # Reward Shaping: Asignamos recompensas sintéticas (Diapositiva 26)
             reward = self._determine_immediate_reward(s)
             self.rewards_model[current_state_key] = reward
             
-            # N[s_t-1][a_t-1][s_t] ++
+            # Conteo de transiciones y actualización de probabilidades estimadas
             self.N[self.last_state][self.last_action][current_state_key] += 1
-            
-            # Re-calcular P_hat para este par estado-acción
             total_transitions = sum(self.N[self.last_state][self.last_action].values())
             for s_prime in self.N[self.last_state][self.last_action]:
                 self.P_hat[self.last_state][self.last_action][s_prime] = (
                     self.N[self.last_state][self.last_action][s_prime] / total_transitions
                 )
 
-        # 3. Optimización por tiempo limitado: MDP-Policy-Evaluation (Línea 13)
-        # Aprovechamos los 4 segundos para resolver Bellman sobre lo que conocemos del modelo
+        # 3. Optimización por tiempo limitado: MDP-Policy-Evaluation
         self._time_bounded_policy_evaluation(start_time)
         
-        # 4. Actualizar q_hat a partir de v_hat y P_hat (Línea 15)
+        # 4. Actualizar q_hat a partir de v_hat y P_hat
         self._update_q_values_for_state(current_state_key)
         
-        # 5. Selección de la acción bajo la política explotativa de q_hat
-        # Si no conocemos q_hat del estado, recurrimos a una acción aleatoria (Exploración implícita)
+        # 5. Selección de la acción (Exploración implícita guiada al centro)
         if current_state_key in self.q_hat and self.q_hat[current_state_key]:
             chosen_action = max(available_cols, key=lambda a: self.q_hat[current_state_key].get(a, 0.0))
         else:
-            rng = np.random.default_rng()
-            chosen_action = int(rng.choice(available_cols))
+            # Para acelerar el aprendizaje frente a la aleatoriedad, probamos las columnas 
+            # centrales primero cuando el estado es desconocido. Esto aumenta drásticamente
+            # las probabilidades de conectar 4 rápido.
+            center_preference = [3, 2, 4, 1, 5, 0, 6]
+            chosen_action = next(c for c in center_preference if c in available_cols)
             
         # 6. Actualizar política interna pi para futuras evaluaciones de Bellman
         self.pi[current_state_key] = {a: (1.0 if a == chosen_action else 0.0) for a in available_cols}
         
-        # Guardar historial para la transición del siguiente turno
         self.last_state = current_state_key
         self.last_action = chosen_action
         
@@ -91,11 +101,9 @@ class Connect4ADPAgent(Policy):
     def _time_bounded_policy_evaluation(self, start_time, theta=1e-4):
         """
         Evaluación de la política adaptada al tiempo límite.
-        v_hat(s) = r(s) + gamma * sum( P_hat(s'|s, pi(s)) * v_hat(s') )
         """
         while True:
-            # Control estricto del tiempo límite por turno
-            if time.time() - start_time > (self.max_time - 0.2): # Margen de seguridad de 0.2s
+            if time.time() - start_time > (self.max_time - 0.2):
                 break
                 
             delta = 0
@@ -103,7 +111,6 @@ class Connect4ADPAgent(Policy):
                 v_old = self.v_hat[s]
                 expected_future_value = 0
                 
-                # sum_a pi(a|s) * sum_s' P(s'|s,a) * v(s')
                 for a, prob_a in self.pi[s].items():
                     for s_prime, prob_transition in self.P_hat[s][a].items():
                         expected_future_value += prob_a * prob_transition * self.v_hat[s_prime]
@@ -116,7 +123,7 @@ class Connect4ADPAgent(Policy):
 
     def _update_q_values_for_state(self, s):
         """
-        Deriva q_hat(s, a) basándose en la última actualización de v_hat (Línea 15).
+        Deriva q_hat(s, a) basándose en la última actualización de v_hat.
         """
         for a in self.P_hat[s]:
             q_val = 0
@@ -126,9 +133,16 @@ class Connect4ADPAgent(Policy):
 
     def _determine_immediate_reward(self, board: np.ndarray) -> float:
         """
-        Asigna utilidad básica al estado. En ADP, aprender las recompensas 'r' 
-        es parte del proceso (Diapositiva 16).
+        Implementación estricta de Reward Shaping (Diapositiva 26).
+        Se inyectan recompensas sintéticas en estados terminales conocidos
+        para propagar el valor rápidamente por Bellman.
         """
-        # Si hay una condición de fin de juego detectable en el tablero recibido,
-        # se puede retornar 1.0 (victoria) o -1.0 (derrota). De lo contrario, 0.0.
+        state = ConnectState(board=board, player=self.my_player_id)
+        winner = state.get_winner()
+        
+        if winner == self.my_player_id:
+            return 100.0  # Gran recompensa por ganar
+        elif winner != 0 and winner != self.my_player_id:
+            return -100.0 # Gran penalización por perder
+            
         return 0.0
