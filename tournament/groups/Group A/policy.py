@@ -2,7 +2,7 @@ import numpy as np
 import time
 from connect4.policy import Policy
 from connect4.connect_state import ConnectState
-
+# Created by Joao Alexandre Muñoz Obando
 class FVMCAgent(Policy):
     """
     Agente riguroso basado en Iteración General de Políticas (GPI) 
