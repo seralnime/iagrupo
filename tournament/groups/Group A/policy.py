@@ -2,7 +2,7 @@ import numpy as np
 import time
 from connect4.policy import Policy
 from connect4.connect_state import ConnectState
-
+# Created by Joao Alexandre Muñoz Obando
 class FVMCAgent(Policy):
     """
     Agente riguroso basado en Iteración General de Políticas (GPI) 
@@ -35,16 +35,31 @@ class FVMCAgent(Policy):
         root_state = ConnectState(board=s, player=current_player)
         valid_locations = [int(c) for c in root_state.get_free_cols() if s[0, int(c)] == 0]
         
-        if not valid_locations:
-            return 0
+        if not valid_locations or root_state.is_final():
+            return int(valid_locations[0]) if valid_locations else 0
             
+        # Heurística de Lookahead (1-step): Verificaciones inmediatas de supervivencia[cite: 8]
+        # 1. Ataque: Si podemos ganar inmediatamente, tomamos la acción sin dudarlo.
+        for a in valid_locations:
+            if root_state.transition(a).get_winner() == self.my_piece:
+                return a
+                
+        # 2. Defensa: Si el oponente tiene una victoria inmediata en la siguiente jugada, la bloqueamos.
+        opp_state = ConnectState(board=s, player=-self.my_piece)
+        for a in valid_locations:
+            if opp_state.transition(a).get_winner() == -self.my_piece:
+                return a
+                
         # Imposición del límite estricto de tiempo: 
-        # Utiliza el margen de seguridad de max_time, pero jamás excede los 300 segundos (5 min).
-        safe_time = min(self.max_time * 0.9, 300.0)
+        # Utiliza el margen de seguridad de max_time.
+        safe_time = self.max_time * 0.9
         
-        # Generación iterativa de episodios (Trials) manteniendo control del presupuesto temporal[cite: 6, 9]
-        while time.time() - start_time < safe_time:
+        # Generación iterativa de episodios (Trials) limitando tanto en tiempo como 
+        # en número máximo de iteraciones (150) para evitar agotar los 600s de Gradescope.
+        episodes = 0
+        while time.time() - start_time < safe_time and episodes < 150:
             self._run_fvmc_episode(root_state)
+            episodes += 1
             
         best_action = self._get_greedy_action(root_state, valid_locations)
         return int(best_action)
