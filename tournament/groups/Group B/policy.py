@@ -3,7 +3,6 @@ import time
 from collections import defaultdict
 from connect4.policy import Policy
 from connect4.connect_state import ConnectState # Usamos tu clase de estado para el Reward Shaping
-from typing import override
 
 class Connect4ADPAgent(Policy):
     """
@@ -30,7 +29,6 @@ class Connect4ADPAgent(Policy):
         self.last_action = None
         self.my_player_id = None # Identificador para dar la recompensa al jugador correcto
 
-    @override
     def mount(self, timeout: float = 4.0) -> None:
         """
         Línea 1 del algoritmo ADP.
@@ -43,7 +41,6 @@ class Connect4ADPAgent(Policy):
         self.last_action = None
         self.my_player_id = None 
 
-    @override
     def act(self, s: np.ndarray) -> int:
         start_time = time.time()
         
