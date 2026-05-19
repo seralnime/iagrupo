@@ -4,6 +4,46 @@ import time
 from connect4.policy import Policy
 from connect4.connect_state import ConnectState
 
+def get_drop_row(board, col):
+    for r in range(5, -1, -1):
+        if board[r, col] == 0:
+            return r
+    return -1
+
+def fast_win_check(board, player, row, col):
+    # 1. Vertical
+    if row <= 2:
+        if board[row+1, col] == player and board[row+2, col] == player and board[row+3, col] == player:
+            return True
+    # 2. Horizontal
+    count = 1
+    for c in range(col-1, max(-1, col-4), -1):
+        if board[row, c] == player: count += 1
+        else: break
+    for c in range(col+1, min(7, col+4)):
+        if board[row, c] == player: count += 1
+        else: break
+    if count >= 4: return True
+    # 3. Diagonal \
+    count = 1
+    for i in range(1, 4):
+        if row-i >= 0 and col-i >= 0 and board[row-i, col-i] == player: count += 1
+        else: break
+    for i in range(1, 4):
+        if row+i < 6 and col+i < 7 and board[row+i, col+i] == player: count += 1
+        else: break
+    if count >= 4: return True
+    # 4. Diagonal /
+    count = 1
+    for i in range(1, 4):
+        if row-i >= 0 and col+i < 7 and board[row-i, col+i] == player: count += 1
+        else: break
+    for i in range(1, 4):
+        if row+i < 6 and col-i >= 0 and board[row+i, col-i] == player: count += 1
+        else: break
+    if count >= 4: return True
+    return False
+
 class MCTSTranspositionNode:
     def __init__(self, state: ConnectState, parent=None, action=None, depth=20, heuristics=True):
         self.state = state
@@ -12,18 +52,9 @@ class MCTSTranspositionNode:
         self.children = {}
         self.visits = 0
         self.wins = 0
-        raw_available = state.get_free_cols()
-        self.available_actions = []
-        for a in raw_available:
-            try:
-                state.transition(a)
-                self.available_actions.append(a)
-            except ValueError:
-                pass
+        self.available_actions = state.get_free_cols()
         self.depth = depth
         self.heuristics = heuristics
-        
-        # Center column heuristic bias
         self.center_col = 3
         
     def is_fully_expanded(self):
@@ -35,46 +66,30 @@ class MCTSTranspositionNode:
     def best_child(self, exploration_weight):
         best_score = -float('inf')
         best_child = None
-        
         for action, child in self.children.items():
             if child.visits == 0:
                 return child
-            
-            # UCB1 Formula
             win_rate = child.wins / child.visits
             exploration_term = math.sqrt(math.log(self.visits) / child.visits)
-            
-            # Heuristic bonus: prefer center columns slightly when exploring
             heuristic_bonus = 0.0
             if self.heuristics:
-                dist_to_center = abs(action - self.center_col)
-                # Max dist is 3, bonus ranges from 0.0 to 0.03
-                heuristic_bonus = (3 - dist_to_center) * 0.01 
-            
+                heuristic_bonus = (3 - abs(action - self.center_col)) * 0.01 
             score = win_rate + exploration_weight * exploration_term + heuristic_bonus
-            
             if score > best_score:
                 best_score = score
                 best_child = child
-                
         return best_child
     
     def expand(self, transposition_table):
         untried_actions = [a for a in self.available_actions if a not in self.children]
-        if not untried_actions:
-            return None
-            
-        # Try to expand center columns first
+        if not untried_actions: return None
         untried_actions.sort(key=lambda x: abs(x - self.center_col))
         action = untried_actions[0]
         
         next_state = self.state.transition(action)
         state_hash = self._hash_state(next_state)
         
-        # Use transposition table to avoid re-expanding known states
         if state_hash in transposition_table:
-            # We found a similar state, but we must create a new node in this tree path
-            # However, we can initialize its statistics with the known ones
             cached_stats = transposition_table[state_hash]
             child_node = MCTSTranspositionNode(next_state, parent=self, action=action, 
                                                depth=self.depth, heuristics=self.heuristics)
@@ -91,120 +106,98 @@ class MCTSTranspositionNode:
         return hash((state.board.tobytes(), state.player))
 
     def _simulate(self, my_player):
-        current_state = ConnectState(board=self.state.board.copy(), player=self.state.player)
+        current_board = self.state.board.copy()
+        current_player = self.state.player
         moves = 0
+        winner = 0
         
         while moves < self.depth:
-            if current_state.is_final():
-                break
-                
-            raw_available = current_state.get_free_cols()
-            available = []
-            for a in raw_available:
-                try:
-                    current_state.transition(a)
-                    available.append(a)
-                except ValueError:
-                    pass
-            if not available:
-                break
+            available = [c for c in range(7) if current_board[0, c] == 0]
+            if not available: break
                 
             if self.heuristics:
-                action = self._select_heuristic_action(current_state, available)
+                action = None
+                for a in available:
+                    r = get_drop_row(current_board, a)
+                    current_board[r, a] = current_player
+                    if fast_win_check(current_board, current_player, r, a):
+                        action = a
+                        current_board[r, a] = 0
+                        break
+                    current_board[r, a] = 0
+                if action is None:
+                    opp = -current_player
+                    for a in available:
+                        r = get_drop_row(current_board, a)
+                        current_board[r, a] = opp
+                        if fast_win_check(current_board, opp, r, a):
+                            action = a
+                            current_board[r, a] = 0
+                            break
+                        current_board[r, a] = 0
+                if action is None:
+                    safe_actions = []
+                    for a in available:
+                        r = get_drop_row(current_board, a)
+                        if r > 0:
+                            current_board[r, a] = current_player
+                            current_board[r-1, a] = opp
+                            win = fast_win_check(current_board, opp, r-1, a)
+                            current_board[r-1, a] = 0
+                            current_board[r, a] = 0
+                            if win: continue
+                        safe_actions.append(a)
+                    cands = safe_actions if safe_actions else available
+                    if self.center_col in cands: action = self.center_col
+                    else: action = min(cands, key=lambda x: abs(x - self.center_col))
             else:
-                action = self._select_fast_action(current_state, available)
-                
-            try:
-                current_state = current_state.transition(action)
-                moves += 1
-            except ValueError:
+                if self.center_col in available: action = self.center_col
+                else:
+                    central = [c for c in available if 2 <= c <= 4]
+                    if central: action = np.random.choice(central)
+                    else: action = np.random.choice(available)
+            
+            r = get_drop_row(current_board, action)
+            current_board[r, action] = current_player
+            if fast_win_check(current_board, current_player, r, action):
+                winner = current_player
                 break
                 
-        winner = current_state.get_winner()
-        
-        # Decay factor: prefer faster wins and slower losses
+            current_player = -current_player
+            moves += 1
+            
         decay = 0.99 ** moves
-        
-        if winner == my_player:
-            return 1.0 * decay
-        elif winner == 0:
-            return 0.5
-        else:
-            return 0.0
-
-    def _select_heuristic_action(self, state, available_actions):
-        # 1. Immediate Win
-        for action in available_actions:
-            if state.transition(action).get_winner() == state.player:
-                return action
-                
-        # 2. Immediate Block
-        opponent = -state.player
-        test_state = ConnectState(board=state.board.copy(), player=opponent)
-        for action in available_actions:
-            if test_state.transition(action).get_winner() == opponent:
-                return action
-                
-        # 3. Filter safe actions (avoid playing below an opponent's winning spot)
-        safe_actions = []
-        for action in available_actions:
-            try:
-                next_state = state.transition(action)
-                if action in next_state.get_free_cols():
-                    test_opp_state = ConnectState(board=next_state.board.copy(), player=opponent)
-                    if test_opp_state.transition(action).get_winner() == opponent:
-                        continue # Suicide move
-                safe_actions.append(action)
-            except ValueError:
-                pass
-            
-        # If all moves are suicide, just pick from available
-        candidate_actions = safe_actions if safe_actions else available_actions
-                
-        # 4. Center preference among candidates
-        if self.center_col in candidate_actions:
-            return self.center_col
-            
-        return min(candidate_actions, key=lambda x: abs(x - self.center_col))
-
-    def _select_fast_action(self, state, available_actions):
-        if self.center_col in available_actions:
-            return self.center_col
-        central_actions = [col for col in available_actions if 2 <= col <= 4]
-        if central_actions:
-            return np.random.choice(central_actions)
-        return np.random.choice(available_actions)
-
+        if winner == my_player: return 1.0 * decay
+        elif winner == 0: return 0.5
+        else: return 0.0
 
 class AgenteOptimo(Policy):
-    """
-    Agente MCTS Mejorado con Transposition Tables y Heurísticas.
-    Diseñado para el torneo de Connect-4.
-    """
-    def __init__(self, num_simulations=500, exploration_weight=1.414, 
-                 rollout_depth=25, heuristics_enabled=True, max_time=4.5):
+    def __init__(self, num_simulations=50, exploration_weight=1.414, 
+                 rollout_depth=25, heuristics_enabled=False, max_time=4.5):
         super().__init__()
         self.num_simulations = num_simulations
         self.exploration_weight = exploration_weight
         self.rollout_depth = rollout_depth
         self.heuristics_enabled = heuristics_enabled
-        self.max_time = max_time # Time limit in seconds
+        self.max_time = max_time
         self.transposition_table = {}
 
     def mount(self, timeout=None):
-        # Clear the transposition table between matches
         self.transposition_table = {}
+        if timeout is not None:
+            self.max_time = float(timeout) * 0.85
 
     def act(self, s):
         start_time = time.time()
-        
         red_pieces = np.sum(s == -1)
         yellow_pieces = np.sum(s == 1)
         current_player = -1 if red_pieces == yellow_pieces else 1
-        
         initial_state = ConnectState(board=s, player=current_player)
         
-        # 0. Check immediate moves to save time
+        if initial_state.is_final():
+            free = initial_state.get_free_cols()
+            return int(free[0]) if free else 0
+
         quick_move = self._check_immediate_moves(initial_state)
         if quick_move is not None:
             return int(quick_move)
@@ -213,24 +206,15 @@ class AgenteOptimo(Policy):
         
         simulations_run = 0
         while simulations_run < self.num_simulations:
-            # Time constraint check
             if time.time() - start_time > self.max_time:
                 break
-                
             node = root
-            
-            # Selection
             while not node.is_terminal() and node.is_fully_expanded():
                 node = node.best_child(self.exploration_weight)
-                
-            # Expansion
             if not node.is_terminal() and not node.is_fully_expanded():
                 node = node.expand(self.transposition_table)
-                
-            # Simulation
             reward = node._simulate(current_player)
             
-            # Backpropagation
             curr = node
             while curr is not None:
                 curr.visits += 1
@@ -240,19 +224,15 @@ class AgenteOptimo(Policy):
                     curr.wins += reward
                 else:
                     curr.wins += (1.0 - reward)
-                    
-                # Update Transposition Table
+                
                 state_hash = curr._hash_state(curr.state)
                 if state_hash not in self.transposition_table:
                     self.transposition_table[state_hash] = {'visits': 0, 'wins': 0.0}
                 self.transposition_table[state_hash]['visits'] += 1
                 self.transposition_table[state_hash]['wins'] += (reward if curr.parent and curr.parent.state.player == current_player else (1.0-reward))
-                
                 curr = curr.parent
-                
             simulations_run += 1
 
-        # Select the best action based on visit counts
         best_action = None
         max_visits = -1
         for action, child in root.children.items():
@@ -269,49 +249,40 @@ class AgenteOptimo(Policy):
         return int(best_action)
 
     def _check_immediate_moves(self, state):
-        raw_available = state.get_free_cols()
-        available = []
-        for a in raw_available:
-            try:
-                state.transition(a)
-                available.append(a)
-            except ValueError:
-                pass
-                
-        if not available:
-            return None
+        available = state.get_free_cols()
+        if not available: return None
         
-        # Win immediately
         for action in available:
-            if state.transition(action).get_winner() == state.player:
-                return action
+            r = get_drop_row(state.board, action)
+            if r >= 0:
+                state.board[r, action] = state.player
+                win = fast_win_check(state.board, state.player, r, action)
+                state.board[r, action] = 0
+                if win: return action
                 
-        # Block immediately
         opponent = -state.player
-        test_state = ConnectState(board=state.board.copy(), player=opponent)
         for action in available:
-            if test_state.transition(action).get_winner() == opponent:
-                return action
-        # Avoid MCTS root expanding suicide moves if possible
+            r = get_drop_row(state.board, action)
+            if r >= 0:
+                state.board[r, action] = opponent
+                win = fast_win_check(state.board, opponent, r, action)
+                state.board[r, action] = 0
+                if win: return action
+                
         safe_actions = []
         for action in available:
-            try:
-                next_state = state.transition(action)
-                if action in next_state.get_free_cols():
-                    test_opp_state = ConnectState(board=next_state.board.copy(), player=opponent)
-                    if test_opp_state.transition(action).get_winner() == opponent:
-                        continue
-                safe_actions.append(action)
-            except ValueError:
-                pass
+            r = get_drop_row(state.board, action)
+            if r > 0:
+                state.board[r, action] = state.player
+                state.board[r-1, action] = opponent
+                win = fast_win_check(state.board, opponent, r-1, action)
+                state.board[r-1, action] = 0
+                state.board[r, action] = 0
+                if win: continue
+            safe_actions.append(action)
             
-        # If we have safe actions, restrict MCTS to only these by hacking the initial state?
-        # A simpler way is to just let MCTS figure it out, but returning None means MCTS will handle it.
-        # But if there's only 1 safe action left, we MUST play it to avoid losing.
         if len(safe_actions) == 1:
             return safe_actions[0]
-            
-        # If no safe actions, play anything, we've probably lost
         if len(safe_actions) == 0:
             return available[0]
                 
