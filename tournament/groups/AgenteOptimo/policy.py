@@ -12,7 +12,14 @@ class MCTSTranspositionNode:
         self.children = {}
         self.visits = 0
         self.wins = 0
-        self.available_actions = state.get_free_cols()
+        raw_available = state.get_free_cols()
+        self.available_actions = []
+        for a in raw_available:
+            try:
+                state.transition(a)
+                self.available_actions.append(a)
+            except ValueError:
+                pass
         self.depth = depth
         self.heuristics = heuristics
         
@@ -91,7 +98,14 @@ class MCTSTranspositionNode:
             if current_state.is_final():
                 break
                 
-            available = current_state.get_free_cols()
+            raw_available = current_state.get_free_cols()
+            available = []
+            for a in raw_available:
+                try:
+                    current_state.transition(a)
+                    available.append(a)
+                except ValueError:
+                    pass
             if not available:
                 break
                 
@@ -134,12 +148,15 @@ class MCTSTranspositionNode:
         # 3. Filter safe actions (avoid playing below an opponent's winning spot)
         safe_actions = []
         for action in available_actions:
-            next_state = state.transition(action)
-            if action in next_state.get_free_cols():
-                test_opp_state = ConnectState(board=next_state.board.copy(), player=opponent)
-                if test_opp_state.transition(action).get_winner() == opponent:
-                    continue # Suicide move
-            safe_actions.append(action)
+            try:
+                next_state = state.transition(action)
+                if action in next_state.get_free_cols():
+                    test_opp_state = ConnectState(board=next_state.board.copy(), player=opponent)
+                    if test_opp_state.transition(action).get_winner() == opponent:
+                        continue # Suicide move
+                safe_actions.append(action)
+            except ValueError:
+                pass
             
         # If all moves are suicide, just pick from available
         candidate_actions = safe_actions if safe_actions else available_actions
@@ -174,7 +191,7 @@ class AgenteOptimo(Policy):
         self.max_time = max_time # Time limit in seconds
         self.transposition_table = {}
 
-    def mount(self):
+    def mount(self, timeout=None):
         # Clear the transposition table between matches
         self.transposition_table = {}
 
@@ -244,12 +261,25 @@ class AgenteOptimo(Policy):
                 best_action = action
                 
         if best_action is None:
-            best_action = initial_state.get_free_cols()[0]
+            if root.available_actions:
+                best_action = root.available_actions[0]
+            else:
+                best_action = initial_state.get_free_cols()[0]
             
         return int(best_action)
 
     def _check_immediate_moves(self, state):
-        available = state.get_free_cols()
+        raw_available = state.get_free_cols()
+        available = []
+        for a in raw_available:
+            try:
+                state.transition(a)
+                available.append(a)
+            except ValueError:
+                pass
+                
+        if not available:
+            return None
         
         # Win immediately
         for action in available:
@@ -265,12 +295,15 @@ class AgenteOptimo(Policy):
         # Avoid MCTS root expanding suicide moves if possible
         safe_actions = []
         for action in available:
-            next_state = state.transition(action)
-            if action in next_state.get_free_cols():
-                test_opp_state = ConnectState(board=next_state.board.copy(), player=opponent)
-                if test_opp_state.transition(action).get_winner() == opponent:
-                    continue
-            safe_actions.append(action)
+            try:
+                next_state = state.transition(action)
+                if action in next_state.get_free_cols():
+                    test_opp_state = ConnectState(board=next_state.board.copy(), player=opponent)
+                    if test_opp_state.transition(action).get_winner() == opponent:
+                        continue
+                safe_actions.append(action)
+            except ValueError:
+                pass
             
         # If we have safe actions, restrict MCTS to only these by hacking the initial state?
         # A simpler way is to just let MCTS figure it out, but returning None means MCTS will handle it.
