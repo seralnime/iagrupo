@@ -1,208 +1,136 @@
 import numpy as np
-import math
 import time
 from connect4.policy import Policy
 from connect4.connect_state import ConnectState
-from typing import override
 
-class Aha(Policy):
-    @override
-    def mount(self) -> None:
-        pass
-
-    @override
-    def act(self, s: np.ndarray) -> int:
-        rng = np.random.default_rng()
-        available_cols = [c for c in range(7) if s[0, c] == 0]
-        return int(rng.choice(available_cols))
-
-
-class AlphaBetaAgent(Policy):
+class FVMCAgent(Policy):
     """
-    Agente que utiliza Minimax con Poda Alfa-Beta, 
-    Profundidad Iterativa y Tablas de Transposición.
+    Agente riguroso basado en Iteración General de Políticas (GPI) 
+    con First-Visit Monte Carlo (FVMC), explorando con epsilon-greedy 
+    y aprendiendo bajo un modelo de Juego de Markov Alternado de suma cero.
     """
-    def __init__(self, max_time=4.0):
+    def __init__(self, max_time=4.0, gamma=1.0, epsilon=0.1):
         super().__init__()
         self.max_time = max_time
-        self.start_time = 0
-        self.transposition_table = {}
+        self.gamma = gamma       # Factor de descuento para el valor de la utilidad[cite: 9]
+        self.epsilon = epsilon   # Probabilidad de exploración para estrategia epsilon-greedy[cite: 8]
+        self.q_table = {}        # Función Q única compartida
+        self.n_table = {}        # Contadores de estabilización
         self.my_piece = 0
 
-    @override
-    def mount(self) -> None:
-        self.transposition_table.clear()
+    def mount(self, timeout: float = None) -> None:
+        self.q_table.clear()
+        self.n_table.clear()
+        if timeout is not None:
+            self.max_time = timeout
 
-    @override
     def act(self, s: np.ndarray) -> int:
-        self.start_time = time.time()
+        start_time = time.time()
         
         red_pieces = np.sum(s == -1)
         yellow_pieces = np.sum(s == 1)
         current_player = -1 if red_pieces == yellow_pieces else 1
         self.my_piece = current_player
         
-        state = ConnectState(board=s, player=current_player)
-        valid_locations = state.get_free_cols()
+        root_state = ConnectState(board=s, player=current_player)
+        valid_locations = [int(c) for c in root_state.get_free_cols() if s[0, int(c)] == 0]
         
-        # Fallback action
-        best_col = valid_locations[len(valid_locations) // 2] if valid_locations else 0
-        
-        try:
-            # Iterative deepening
-            for depth in range(1, 42): 
-                if time.time() - self.start_time > self.max_time:
-                    break
-                    
-                col, score = self.minimax(state, depth, -math.inf, math.inf, True)
-                
-                if col is not None:
-                    best_col = col
-                    
-                # Si encontramos victoria forzada o derrota forzada, no necesitamos buscar más profundo
-                if score >= 900000 or score <= -900000:
-                    break
-                    
-        except TimeoutError:
-            # Se acabó el tiempo a mitad de una profundidad, usamos la mejor jugada de la profundidad anterior
-            pass 
+        if not valid_locations:
+            return 0
             
-        return int(best_col)
-
-    def minimax(self, state: ConnectState, depth: int, alpha: float, beta: float, maximizingPlayer: bool):
-        if time.time() - self.start_time > self.max_time:
-            raise TimeoutError()
+        # Imposición del límite estricto de tiempo: 
+        # Utiliza el margen de seguridad de max_time, pero jamás excede los 300 segundos (5 min).
+        safe_time = min(self.max_time * 0.9, 300.0)
+        
+        # Generación iterativa de episodios (Trials) manteniendo control del presupuesto temporal[cite: 6, 9]
+        while time.time() - start_time < safe_time:
+            self._run_fvmc_episode(root_state)
             
-        board_hash = hash((state.board.tobytes(), state.player))
+        best_action = self._get_greedy_action(root_state, valid_locations)
+        return int(best_action)
         
-        # TT Lookup
-        if board_hash in self.transposition_table:
-            cached_depth, cached_score, cached_flag, cached_col = self.transposition_table[board_hash]
-            if cached_depth >= depth:
-                if cached_flag == "EXACT":
-                    return cached_col, cached_score
-                elif cached_flag == "LOWERBOUND":
-                    alpha = max(alpha, cached_score)
-                elif cached_flag == "UPPERBOUND":
-                    beta = min(beta, cached_score)
-                
-                if alpha >= beta:
-                    return cached_col, cached_score
+    def _get_state_hash(self, state: ConnectState):
+        """Hashea el estado matricial de forma inmutable."""
+        return hash((state.board.tobytes(), state.player))
+        
+    def _get_greedy_action(self, state: ConnectState, valid_locations: list):
+        """Retorna arg max de \hat{q}_t(a) evaluando la tabla Q desde la perspectiva del jugador actual[cite: 8]."""
+        s_hash = self._get_state_hash(state)
+        best_q = -float('inf')
+        best_a = valid_locations[0] if valid_locations else 0
+        
+        for a in valid_locations:
+            q_val = self.q_table.get((s_hash, int(a)), 0.0)
+            if q_val > best_q:
+                best_q = q_val
+                best_a = int(a)
+        return best_a
 
-        winner = state.get_winner()
-        is_terminal = winner != 0 or not any(state.board[0] == 0)
+    def _run_fvmc_episode(self, start_state: ConnectState):
+        """
+        Genera una trayectoria conceptual manteniendo la pureza estricta 
+        de la evaluación First-Visit Monte Carlo[cite: 9].
+        """
+        current_state = ConnectState(board=np.copy(start_state.board), player=start_state.player)
         
-        if depth == 0 or is_terminal:
-            if is_terminal:
-                if winner == self.my_piece:
-                    return (None, 1000000 + depth) # Preferimos victorias más rápidas
-                elif winner != 0:
-                    return (None, -1000000 - depth) # Preferimos derrotas más lentas
-                else: # Empate
-                    return (None, 0)
+        if current_state.get_winner() != 0:
+            return
+            
+        trajectory = []
+        terminal = False
+        reward = 0.0
+        
+        # 1. Generar la trayectoria estocástica (Trial \tau)[cite: 9]
+        while not terminal:
+            valid_locations = [int(c) for c in current_state.get_free_cols() if current_state.board[0, int(c)] == 0]
+            if not valid_locations:
+                break
+                
+            s_hash = self._get_state_hash(current_state)
+            
+            # Equilibrio de exploración vs. explotación[cite: 8]
+            if np.random.random() < self.epsilon:
+                action = int(np.random.choice(valid_locations))
             else:
-                return (None, self.score_position(state.board, self.my_piece))
+                action = int(self._get_greedy_action(current_state, valid_locations))
                 
-        valid_locations = state.get_free_cols()
-        # Move ordering: evaluar el centro primero optimiza la poda Alfa-Beta
-        valid_locations.sort(key=lambda x: abs(x - 3))
+            # Registramos quién hizo el movimiento antes de transicionar
+            trajectory.append((s_hash, action, current_state.player))
+            
+            current_state = current_state.transition(action)
+            winner = current_state.get_winner()
+            
+            if winner != 0:
+                terminal = True
+                # La recompensa de un triunfo es lógicamente 1.0 para el jugador que ejecutó la última acción
+                reward = 1.0 
+            elif not any(current_state.board[0, c] == 0 for c in range(7)):
+                terminal = True
+                reward = 0.0
         
-        orig_alpha = alpha
-        best_col = valid_locations[0]
-
-        if maximizingPlayer:
-            value = -math.inf
-            for col in valid_locations:
-                next_state = state.transition(col)
-                new_score = self.minimax(next_state, depth-1, alpha, beta, False)[1]
+        # 2. Evaluación de Políticas mediante First-Visit Monte Carlo[cite: 9]
+        U = reward
+        visited = set()
+        
+        # Retropropagación iterativa: desde el final de la trayectoria hasta el origen[cite: 9]
+        for t in range(len(trajectory) - 1, -1, -1):
+            s_hash, action, player = trajectory[t]
+            state_action = (s_hash, action)
+            
+            # Condición de estricta de Primera Visita para mantener el modelo insesgado[cite: 9]
+            if state_action not in visited:
+                visited.add(state_action)
                 
-                if new_score > value:
-                    value = new_score
-                    best_col = col
-                
-                alpha = max(alpha, value)
-                if alpha >= beta:
-                    break
-        else: # Minimizing player
-            value = math.inf
-            for col in valid_locations:
-                next_state = state.transition(col)
-                new_score = self.minimax(next_state, depth-1, alpha, beta, True)[1]
-                
-                if new_score < value:
-                    value = new_score
-                    best_col = col
+                if state_action not in self.n_table:
+                    self.n_table[state_action] = 0
+                    self.q_table[state_action] = 0.0
                     
-                beta = min(beta, value)
-                if alpha >= beta:
-                    break
-                    
-        # TT Store
-        flag = "EXACT"
-        if value <= orig_alpha:
-            flag = "UPPERBOUND"
-        elif value >= beta:
-            flag = "LOWERBOUND"
-            
-        self.transposition_table[board_hash] = (depth, value, flag, best_col)
-        
-        return best_col, value
-
-    def score_position(self, board, piece):
-        score = 0
-        opp_piece = -piece
-        
-        # Center column preference
-        center_array = board[:, 3]
-        center_count = np.sum(center_array == piece)
-        score += center_count * 30
-        
-        # Horizontal
-        for r in range(6):
-            row_array = board[r, :]
-            for c in range(4):
-                window = row_array[c:c+4]
-                score += self.evaluate_window(window, piece, opp_piece)
+                self.n_table[state_action] += 1
                 
-        # Vertical
-        for c in range(7):
-            col_array = board[:, c]
-            for r in range(3):
-                window = col_array[r:r+4]
-                score += self.evaluate_window(window, piece, opp_piece)
-                
-        # Positive Diagonal
-        for r in range(3):
-            for c in range(4):
-                window = [board[r+i, c+i] for i in range(4)]
-                score += self.evaluate_window(window, piece, opp_piece)
-                
-        # Negative Diagonal
-        for r in range(3):
-            for c in range(4):
-                window = [board[r+3-i, c+i] for i in range(4)]
-                score += self.evaluate_window(window, piece, opp_piece)
-                
-        return score
-
-    def evaluate_window(self, window, piece, opp_piece):
-        score = 0
-        
-        if isinstance(window, list):
-            piece_count = window.count(piece)
-            empty_count = window.count(0)
-            opp_count = window.count(opp_piece)
-        else:
-            piece_count = np.sum(window == piece)
-            empty_count = np.sum(window == 0)
-            opp_count = np.sum(window == opp_piece)
+                # Actualización de media empírica de forma incremental constante[cite: 8, 9]
+                error = U - self.q_table[state_action]
+                self.q_table[state_action] += error / self.n_table[state_action]
             
-        if piece_count == 3 and empty_count == 1:
-            score += 50
-        elif piece_count == 2 and empty_count == 2:
-            score += 10
-            
-        if opp_count == 3 and empty_count == 1:
-            score -= 80
-            
-        return score
+            # Alternating Markov Games: Actualización Bipolar[cite: 10]
+            # La utilidad para el oponente en el turno previo es estrictamente inversa[cite: 10].
+            U = -self.gamma * U
