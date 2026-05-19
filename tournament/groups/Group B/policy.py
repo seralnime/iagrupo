@@ -2,7 +2,6 @@ import numpy as np
 import time
 from collections import defaultdict
 from connect4.policy import Policy
-from typing import override
 
 class Connect4ADPAgent(Policy):
     """
@@ -28,7 +27,6 @@ class Connect4ADPAgent(Policy):
         self.last_state = None
         self.last_action = None
 
-    @override
     def mount(self) -> None:
         """
         Línea 1 del algoritmo ADP: Inicialización de recursos memorizados.
@@ -38,7 +36,6 @@ class Connect4ADPAgent(Policy):
         # Nota: Retenemos S, N y P_hat a lo largo de las partidas porque el MDP del 
         # Connect 4 no cambia; así el conocimiento se transfiere (Diapositiva 18).
 
-    @override
     def act(self, s: np.ndarray) -> int:
         start_time = time.time()
         
