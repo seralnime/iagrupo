@@ -77,6 +77,21 @@ class Connect4ADPAgent(Policy):
         # 4. Actualizar q_hat a partir de v_hat y P_hat
         self._update_q_values_for_state(current_state_key)
         
+        epsilon = 0.1 # Factor de exploración
+        available_cols = [c for c in range(7) if s[0, c] == 0]
+        
+        if np.random.rand() < epsilon:
+            # Exploración: elegimos al azar
+            chosen_action = int(np.random.choice(available_cols))
+        else:
+            # Explotación: elegimos el mejor según ADP
+            if current_state_key in self.q_hat and self.q_hat[current_state_key]:
+                chosen_action = max(available_cols, key=lambda a: self.q_hat[current_state_key].get(a, 0.0))
+            else:
+                # Si no conocemos nada aún, preferimos el centro
+                center_preference = [3, 2, 4, 1, 5, 0, 6]
+                chosen_action = next(c for c in center_preference if c in available_cols)
+
         # 5. Selección de la acción (Exploración implícita guiada al centro)
         if current_state_key in self.q_hat and self.q_hat[current_state_key]:
             chosen_action = max(available_cols, key=lambda a: self.q_hat[current_state_key].get(a, 0.0))
@@ -138,8 +153,8 @@ class Connect4ADPAgent(Policy):
         winner = state.get_winner()
         
         if winner == self.my_player_id:
-            return 100.0  # Gran recompensa por ganar
+            return 1000.0  # Gran recompensa por ganar
         elif winner != 0 and winner != self.my_player_id:
-            return -100.0 # Gran penalización por perder
+            return -1000.0 # Gran penalización por perder
             
         return 0.0
