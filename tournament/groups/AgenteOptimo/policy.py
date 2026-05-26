@@ -198,6 +198,13 @@ class AgenteOptimo(Policy):
             free = initial_state.get_free_cols()
             return int(free[0]) if free else 0
 
+        # Transición al sistema Alpha-Beta Pruning en el endgame
+        empty_squares = np.sum(s == 0)
+        if empty_squares <= 14:
+            score, best_action = self._minimax_alpha_beta(s.copy(), current_player, current_player, empty_squares, -float('inf'), float('inf'))
+            if best_action is not None:
+                return int(best_action)
+
         quick_move = self._check_immediate_moves(initial_state)
         if quick_move is not None:
             return int(quick_move)
@@ -287,3 +294,57 @@ class AgenteOptimo(Policy):
             return available[0]
                 
         return None
+
+    def _minimax_alpha_beta(self, board, current_player, my_player, depth, alpha, beta):
+        available = [c for c in range(7) if board[0, c] == 0]
+        
+        if not available or depth == 0:
+            return 0, None  # Empate o profundidad máxima (que en este caso es 0)
+            
+        # Ordenar movimientos (centro primero) para mayor probabilidad de poda (pruning)
+        available.sort(key=lambda x: abs(x - 3))
+        is_maximizing = (current_player == my_player)
+        best_action = available[0]
+        
+        if is_maximizing:
+            max_eval = -float('inf')
+            for action in available:
+                r = get_drop_row(board, action)
+                board[r, action] = current_player
+                
+                if fast_win_check(board, current_player, r, action):
+                    board[r, action] = 0
+                    return 1000 + depth, action
+                
+                eval_score, _ = self._minimax_alpha_beta(board, -current_player, my_player, depth-1, alpha, beta)
+                board[r, action] = 0
+                
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_action = action
+                    
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break  # Alpha-Beta pruning
+            return max_eval, best_action
+        else:
+            min_eval = float('inf')
+            for action in available:
+                r = get_drop_row(board, action)
+                board[r, action] = current_player
+                
+                if fast_win_check(board, current_player, r, action):
+                    board[r, action] = 0
+                    return -1000 - depth, action
+                
+                eval_score, _ = self._minimax_alpha_beta(board, -current_player, my_player, depth-1, alpha, beta)
+                board[r, action] = 0
+                
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    best_action = action
+                    
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break  # Alpha-Beta pruning
+            return min_eval, best_action
