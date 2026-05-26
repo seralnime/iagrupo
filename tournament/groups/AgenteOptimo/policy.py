@@ -1,6 +1,8 @@
 import numpy as np
 import math
 import time
+import pickle
+import os
 from connect4.policy import Policy
 from connect4.connect_state import ConnectState
 
@@ -270,16 +272,25 @@ class AgenteOptimo(Policy):
         self.heuristics_enabled = heuristics_enabled # Activar heurísticas en rollouts
         self.max_time = max_time                     # Tiempo límite de pensamiento por turno
         self.transposition_table = {}                # Caché global del árbol para no repetir nodos
+        self.model_path = os.path.join(os.path.dirname(__file__), 'mcts_trees.pkl')
 
     def mount(self, timeout=None):
         """
         Se ejecuta al iniciar una nueva partida.
-        Limpia la memoria del agente (transposition table) y configura el timeout basado en el entorno.
+        Carga la memoria del agente (transposition table) desde disco si existe, y configura el timeout.
         """
-        self.transposition_table = {}
         if timeout is not None:
             # Usar solo el 85% del tiempo permitido para evitar descalificación por timeout en torneos
             self.max_time = float(timeout) * 0.85
+            
+        if os.path.exists(self.model_path):
+            try:
+                with open(self.model_path, 'rb') as f:
+                    self.transposition_table = pickle.load(f)
+            except Exception:
+                self.transposition_table = {}
+        else:
+            self.transposition_table = {}
 
     def act(self, s):
         """
