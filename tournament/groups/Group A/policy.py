@@ -4,7 +4,7 @@ import pickle
 import os
 from connect4.policy import Policy
 from connect4.connect_state import ConnectState
-
+#Algoritmo FirstVisitMonteCarlo Joao Alexandre Muñoz
 class ProfesorFVMC(Policy):
     """
     Agente FVMC con persistencia de memoria.

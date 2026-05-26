@@ -92,11 +92,18 @@ def play(
 
         games.append(game_history)
 
-        # Determine winner
-        if state.get_winner() == -1:
-            a_wins += 1
-        elif state.get_winner() == 1:
-            b_wins += 1
+        # Determine winner (CORREGIDO)
+        winner = state.get_winner()
+        if winner == -1:
+            if first[0] == a:  # Si 'a' jugó primero
+                a_wins += 1
+            else:              # Si 'b' jugó primero
+                b_wins += 1
+        elif winner == 1:
+            if second[0] == b: # Si 'b' jugó segundo
+                b_wins += 1
+            else:              # Si 'a' jugó segundo
+                a_wins += 1
         else:
             draws += 1
 
